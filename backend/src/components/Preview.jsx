@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Play, Coffee, Terminal, Cpu, Clock, HelpCircle, XCircle, AlertCircle, MonitorPlay, X, RotateCcw, ChevronDown, Check, Info } from 'lucide-react';
 
-const API_BASE = "https://java-applet-compiler.onrender.com";
 
 // Helper function to extract method body with balanced braces
 function getMethodBody(code, signatureRegex) {
@@ -26,7 +25,7 @@ function getMethodBody(code, signatureRegex) {
 }
 
 // Java AWT expression evaluator
-const evalExpr = (expr, variables, inputs) => {
+const evalExpr = (expr, variables, inputs, componentStates = {}) => {
   if (expr === undefined || expr === null) return 0;
   let cleaned = String(expr).trim();
 
@@ -39,10 +38,13 @@ const evalExpr = (expr, variables, inputs) => {
       return trimmed.slice(1, -1);
     }
 
-    // Check if AWT textfield value getter (e.g., textField.getText())
+    // Check if AWT component getter (e.g., label/textField.getText())
     const textfieldGetterMatch = trimmed.match(/^(\w+)\.getText\(\)$/);
     if (textfieldGetterMatch) {
       const name = textfieldGetterMatch[1];
+      if (componentStates[name] !== undefined) {
+        return componentStates[name].text;
+      }
       return inputs[name] !== undefined ? inputs[name] : '';
     }
 
@@ -90,17 +92,145 @@ const evalExpr = (expr, variables, inputs) => {
   return resolveToken(cleaned);
 };
 
+const parseActionPerformed = (body) => {
+  const branches = [];
+  let index = 0;
+  while (index < body.length) {
+    const nextIf = body.indexOf('if', index);
+    if (nextIf === -1) break;
+
+    let isElseIf = false;
+    let checkElse = body.substring(Math.max(0, nextIf - 10), nextIf).trim();
+    if (checkElse.endsWith('else')) {
+      isElseIf = true;
+    }
+
+    const openParen = body.indexOf('(', nextIf);
+    if (openParen === -1) {
+      index = nextIf + 2;
+      continue;
+    }
+
+    let parenCount = 1;
+    let closeParen = openParen + 1;
+    while (parenCount > 0 && closeParen < body.length) {
+      if (body[closeParen] === '(') parenCount++;
+      else if (body[closeParen] === ')') parenCount--;
+      closeParen++;
+    }
+    closeParen--;
+
+    const condition = body.substring(openParen + 1, closeParen);
+
+    const openBrace = body.indexOf('{', closeParen);
+    if (openBrace === -1) {
+      index = closeParen + 1;
+      continue;
+    }
+
+    let braceCount = 1;
+    let closeBrace = openBrace + 1;
+    while (braceCount > 0 && closeBrace < body.length) {
+      if (body[closeBrace] === '{') braceCount++;
+      else if (body[closeBrace] === '}') braceCount--;
+      closeBrace++;
+    }
+    closeBrace--;
+
+    const blockBody = body.substring(openBrace + 1, closeBrace);
+
+    let target = null;
+    const strMatch = condition.match(/"([^"]+)"/);
+    if (strMatch) {
+      target = strMatch[1];
+    } else {
+      const varMatch = condition.match(/==\s*(\w+)/) || condition.match(/equals\(\s*(\w+)\s*\)/);
+      if (varMatch) {
+        target = varMatch[1];
+      }
+    }
+
+    const actions = [];
+    const lines = blockBody.split(';');
+    lines.forEach(line => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+
+      const setTextMatch = trimmed.match(/^(\w+)\.setText\((.*?)\)$/);
+      if (setTextMatch) {
+        actions.push({
+          type: 'setText',
+          component: setTextMatch[1],
+          expr: setTextMatch[2].trim()
+        });
+      }
+
+      const assignMatch = trimmed.match(/^(\w+)\s*=\s*(.+)$/);
+      if (assignMatch && !trimmed.includes('.setText(')) {
+        actions.push({
+          type: 'assign',
+          varName: assignMatch[1].trim(),
+          expr: assignMatch[2].trim()
+        });
+      }
+    });
+
+    if (target) {
+      branches.push({ target, actions });
+    }
+
+    index = closeBrace + 1;
+  }
+
+  if (branches.length === 0) {
+    const actions = [];
+    const lines = body.split(';');
+    lines.forEach(line => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+
+      const setTextMatch = trimmed.match(/^(\w+)\.setText\((.*?)\)$/);
+      if (setTextMatch) {
+        actions.push({
+          type: 'setText',
+          component: setTextMatch[1],
+          expr: setTextMatch[2].trim()
+        });
+      }
+
+      const assignMatch = trimmed.match(/^(\w+)\s*=\s*(.+)$/);
+      if (assignMatch && !trimmed.includes('.setText(')) {
+        actions.push({
+          type: 'assign',
+          varName: assignMatch[1].trim(),
+          expr: assignMatch[2].trim()
+        });
+      }
+    });
+    if (actions.length > 0) {
+      branches.push({ target: 'default', actions });
+    }
+  }
+
+  return branches;
+};
+
 // Parser to extract components and drawings from Java Applet code
+// Parser to extract components and drawings from Java Applet/Frame code
 function parseJavaApplet(code) {
   const result = {
     title: 'Applet Viewer',
     backgroundColor: '#ffffff',
+    foregroundColor: 'black',
+    width: 600,
+    height: 500,
     components: [],
     drawings: [],
     variables: {},
     actionPerformed: null,
     hasAnimation: false,
-    animationStep: null
+    animationStep: null,
+    mouseEvents: {}
   };
 
   if (!code) return result;
@@ -110,14 +240,35 @@ function parseJavaApplet(code) {
   if (titleMatch) {
     result.title = titleMatch[1].trim();
   } else {
-    const classMatch = code.match(/public\s+class\s+(\w+)/);
-    if (classMatch) {
-      result.title = `Applet Viewer: ${classMatch[1]}`;
+    // Parse title from Frame/JFrame constructor or setTitle
+    const frameTitleMatch = code.match(/new\s+(?:java\.awt\.)?Frame\(\s*"([^"]+)"\s*\)/) ||
+                            code.match(/new\s+(?:javax\.swing\.)?JFrame\(\s*"([^"]+)"\s*\)/) ||
+                            code.match(/(?:\w+\.)?setTitle\(\s*"([^"]+)"\s*\)/);
+    if (frameTitleMatch) {
+      result.title = frameTitleMatch[1];
+    } else {
+      const classMatch = code.match(/public\s+class\s+(\w+)/);
+      if (classMatch) {
+        result.title = `Applet Viewer: ${classMatch[1]}`;
+      }
     }
   }
 
+  // Parse Width & Height from <applet ... width=... height=...></applet>
+  const widthMatch = code.match(/width\s*=\s*["']?(\d+)["']?/i);
+  const heightMatch = code.match(/height\s*=\s*["']?(\d+)["']?/i);
+  if (widthMatch) result.width = parseInt(widthMatch[1], 10);
+  if (heightMatch) result.height = parseInt(heightMatch[1], 10);
+
+  // Parse size from setSize(w, h) or frame.setSize(w, h)
+  const sizeMatch = code.match(/(?:\w+\.)?setSize\(\s*(\d+)\s*,\s*(\d+)\s*\)/);
+  if (sizeMatch) {
+    result.width = parseInt(sizeMatch[1], 10);
+    result.height = parseInt(sizeMatch[2], 10);
+  }
+
   // 2. Parse Background Color
-  const bgMatch = code.match(/setBackground\(([^)]+)\)/);
+  const bgMatch = code.match(/(?:\w+\.)?setBackground\((Color\.\w+|new Color\([\d\s,]+\)|[^)]+)\)/);
   if (bgMatch) {
     const bgVal = bgMatch[1].trim();
     if (bgVal.startsWith('Color.')) {
@@ -130,12 +281,29 @@ function parseJavaApplet(code) {
     }
   }
 
+  // Parse Foreground Color
+  const fgMatch = code.match(/(?:\w+\.)?setForeground\((Color\.\w+|new Color\([\d\s,]+\)|[^)]+)\)/);
+  if (fgMatch) {
+    const fgVal = fgMatch[1].trim();
+    if (fgVal.startsWith('Color.')) {
+      result.foregroundColor = fgVal.replace('Color.', '').toLowerCase();
+    } else if (fgVal.includes('new Color')) {
+      const rgbMatch = fgVal.match(/Color\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/);
+      if (rgbMatch) {
+        result.foregroundColor = `rgb(${rgbMatch[1]}, ${rgbMatch[2]}, ${rgbMatch[3]})`;
+      }
+    }
+  }
+
   // 3. Parse Component declarations and instantiations
   const declarations = [];
-  const declRegex = /(Label|TextField|Button)\s+([\w\s,]+);/g;
+  const declRegex = /(?:java\.awt\.|javax\.swing\.)?(Label|TextField|Button|JLabel|JTextField|JButton)\s+([\w\s,]+);/g;
   let match;
   while ((match = declRegex.exec(code)) !== null) {
-    const type = match[1];
+    let type = match[1];
+    if (type === 'JLabel') type = 'Label';
+    if (type === 'JTextField') type = 'TextField';
+    if (type === 'JButton') type = 'Button';
     const vars = match[2].split(',').map(v => v.trim());
     vars.forEach(v => {
       declarations.push({ type, name: v });
@@ -145,20 +313,27 @@ function parseJavaApplet(code) {
   const componentsMap = {};
 
   // Find components instantiated with new
-  const instRegex = /(\w+)\s*=\s*new\s+(Label|TextField|Button)\((.*?)\)/g;
+  const instRegex = /(\w+)\s*=\s*new\s+(?:java\.awt\.|javax\.swing\.)?(Label|TextField|Button|JLabel|JTextField|JButton)\((.*?)\)/g;
   while ((match = instRegex.exec(code)) !== null) {
     const name = match[1];
-    const type = match[2];
+    let type = match[2];
     const args = match[3].split(',').map(a => a.trim().replace(/^"|"$/g, ''));
+
+    if (type === 'JLabel') type = 'Label';
+    if (type === 'JTextField') type = 'TextField';
+    if (type === 'JButton') type = 'Button';
 
     componentsMap[name] = { name, type, args };
   }
 
-  // Find direct anonymous additions: add(new Label("..."))
-  const anonRegex = /add\(\s*new\s+(Label|TextField|Button)\((.*?)\)\s*\)/g;
+  // Find direct anonymous additions: add(new Label("...")) or jf.add(new Label("..."))
+  const anonRegex = /(?:\w+\.)?add\(\s*new\s+(?:java\.awt\.|javax\.swing\.)?(Label|TextField|Button|JLabel|JTextField|JButton)\((.*?)\)\s*\)/g;
   let anonCounter = 0;
   while ((match = anonRegex.exec(code)) !== null) {
-    const type = match[1];
+    let type = match[1];
+    if (type === 'JLabel') type = 'Label';
+    if (type === 'JTextField') type = 'TextField';
+    if (type === 'JButton') type = 'Button';
     const args = match[2].split(',').map(a => a.trim().replace(/^"|"$/g, ''));
     const name = `anon_${type.toLowerCase()}_${anonCounter++}`;
     componentsMap[name] = {
@@ -171,7 +346,7 @@ function parseJavaApplet(code) {
   }
 
   // Parse add(varName) statements to order components in the container
-  const addRegex = /add\(\s*(\w+)\s*\)/g;
+  const addRegex = /(?:\w+\.)?add\(\s*(\w+)\s*\)/g;
   while ((match = addRegex.exec(code)) !== null) {
     const name = match[1];
     if (componentsMap[name]) {
@@ -183,7 +358,8 @@ function parseJavaApplet(code) {
   // explicitly because of code formatting variations, add them
   Object.keys(componentsMap).forEach(name => {
     if (!componentsMap[name].isAnonymous && !result.components.some(c => c.name === name)) {
-      if (code.includes(`add(${name})`)) {
+      const pattern = new RegExp(`(?:\\w+\\.)?add\\(\\s*${name}\\s*\\)`);
+      if (pattern.test(code)) {
         result.components.push(componentsMap[name]);
       }
     }
@@ -198,27 +374,77 @@ function parseJavaApplet(code) {
     });
   }
 
-  // 4. Parse member variables for state (e.g. String message = ""; or int x = 10;)
-  const varRegex = /(String|int|double)\s+(\w+)\s*=\s*([^;]+);/g;
-  while ((match = varRegex.exec(code)) !== null) {
+  // 4. Parse member variables for state (handles single and multi-declarations like int x = 40, y = 40;)
+  const varDeclRegex = /(String|int|double|float|char|boolean)\s+([^;]+);/g;
+  while ((match = varDeclRegex.exec(code)) !== null) {
     const type = match[1];
-    const name = match[2];
-    let val = match[3].trim();
-    if (type === 'String') {
-      val = val.replace(/^"|"$/g, '');
-    } else {
-      val = Number(val);
-    }
-    result.variables[name] = val;
+    const decls = match[2].split(',');
+    decls.forEach(decl => {
+      const parts = decl.split('=');
+      const name = parts[0].trim();
+      if (!name) return;
+      
+      let val = undefined;
+      if (parts.length > 1) {
+        val = parts[1].trim();
+        if (type === 'String') {
+          val = val.replace(/^"|"$/g, '');
+        } else if (type === 'int' || type === 'double' || type === 'float') {
+          val = Number(val);
+        } else if (type === 'boolean') {
+          val = val === 'true';
+        }
+      } else {
+        if (type === 'String') val = '';
+        else if (type === 'int' || type === 'double' || type === 'float') val = 0;
+        else if (type === 'boolean') val = false;
+      }
+      result.variables[name] = val;
+    });
   }
 
-  // Also catch uninitialized variables with simple defaults
-  declarations.forEach(d => {
-    if (d.type === 'String' && result.variables[d.name] === undefined) {
-      result.variables[d.name] = '';
-    } else if ((d.type === 'int' || d.type === 'double') && result.variables[d.name] === undefined) {
-      result.variables[d.name] = 0;
-    }
+  // Parse Mouse Event Handlers
+  const parseMouseEventMethod = (methodName) => {
+    const sig = new RegExp(`public\\s+void\\s+${methodName}\\s*\\(\\s*MouseEvent\\s+(\\w+)\\s*\\)\\s*\\{`);
+    const method = getMethodBody(code, sig);
+    if (!method) return null;
+
+    const { gName, body } = method;
+    const statements = body.split(';');
+    const assignments = [];
+    let bgChange = null;
+    let statusMsg = null;
+
+    statements.forEach(stmt => {
+      const trimmed = stmt.trim();
+      if (!trimmed) return;
+
+      const assignMatch = trimmed.match(/^(\w+)\s*=\s*([\s\S]+)$/);
+      if (assignMatch) {
+        assignments.push({
+          varName: assignMatch[1].trim(),
+          expr: assignMatch[2].trim()
+        });
+      }
+
+      const bgMatch = trimmed.match(/(?:\w+\.)?setBackground\((Color\.\w+|new Color\([\d\s,]+\)|[^)]+)\)/);
+      if (bgMatch) {
+        bgChange = bgMatch[1].trim();
+      }
+
+      const statusMatch = trimmed.match(/(?:\w+\.)?showStatus\(([^)]+)\)/);
+      if (statusMatch) {
+        statusMsg = statusMatch[1].trim();
+      }
+    });
+
+    return { meVar: gName, assignments, bgChange, statusMsg };
+  };
+
+  const mouseMethods = ['mouseEntered', 'mouseExited', 'mousePressed', 'mouseReleased', 'mouseClicked', 'mouseMoved', 'mouseDragged'];
+  mouseMethods.forEach(m => {
+    const res = parseMouseEventMethod(m);
+    if (res) result.mouseEvents[m] = res;
   });
 
   // 5. Parse paint operations using brace matching helper
@@ -227,7 +453,7 @@ function parseJavaApplet(code) {
   if (paintMethod) {
     const { gName, body } = paintMethod;
     const statements = body.split(';');
-    let currentColor = 'black';
+    let currentColor = result.foregroundColor || 'black';
     let currentFont = '14px sans-serif';
 
     statements.forEach(stmt => {
@@ -235,7 +461,7 @@ function parseJavaApplet(code) {
       if (!trimmed) return;
 
       // Color check
-      const colorMatch = trimmed.match(new RegExp(`${gName}\\.setColor\\(([^)]+)\\)`));
+      const colorMatch = trimmed.match(new RegExp(`${gName}\\.setColor\\((Color\\\\.\\\\w+|new Color\\\\([\\\\d\\\\s,]+\\\\)|[^)]+)\\)`));
       if (colorMatch) {
         const colVal = colorMatch[1].trim();
         if (colVal.startsWith('Color.')) {
@@ -331,16 +557,7 @@ function parseJavaApplet(code) {
   const apSig = /public\s+void\s+actionPerformed\s*\(\s*ActionEvent\s+(\w+)\s*\)\s*\{/;
   const apMethod = getMethodBody(code, apSig);
   if (apMethod) {
-    const { body } = apMethod;
-    const assignRegex = /(\w+)\s*=\s*([^;]+);/g;
-    let assMatch;
-    const assignments = [];
-    while ((assMatch = assignRegex.exec(body)) !== null) {
-      const varName = assMatch[1];
-      const expr = assMatch[2].trim();
-      assignments.push({ varName, expr });
-    }
-    result.actionPerformed = { assignments };
+    result.actionPerformed = parseActionPerformed(apMethod.body);
   }
 
   // 7. Animation check (implements Runnable)
@@ -379,12 +596,15 @@ function parseJavaApplet(code) {
   return result;
 }
 
-export default function Preview({ code, isRunning, isCompiling, processInfo, exitCode, statusMessage }) {
+export default function Preview({ code, isRunning, isCompiling, processInfo, exitCode, statusMessage, stopCode }) {
   const [elapsedTime, setElapsedTime] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const [scale, setScale] = useState(1);
+  const [appletBg, setAppletBg] = useState('#ffffff');
+  const [appletFg, setAppletFg] = useState('black');
+  const [statusText, setStatusText] = useState('Applet started.');
 
   // Parse code reactively
   const appletData = useMemo(() => parseJavaApplet(code), [code]);
@@ -392,8 +612,13 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
   // Applet variables & inputs states
   const [variables, setVariables] = useState({});
   const [inputs, setInputs] = useState({});
+  const [componentStates, setComponentStates] = useState({});
 
-  const codeIsApplet = code && (code.includes('extends Applet') || code.includes('extends java.applet.Applet'));
+  const isGuiApp = useMemo(() => {
+    if (!code) return false;
+    const guiRegex = /\b(extends\s+(?:java\.applet\.)?Applet|extends\s+(?:javax\.swing\.)?JApplet|extends\s+(?:java\.awt\.)?Frame|extends\s+(?:javax\.swing\.)?JFrame|new\s+(?:java\.awt\.)?Frame|new\s+(?:javax\.swing\.)?JFrame|new\s+(?:java\.awt\.)?Window|new\s+(?:java\.awt\.)?Dialog|new\s+(?:java\.awt\.)?Panel|new\s+(?:javax\.swing\.)?JPanel)\b/;
+    return guiRegex.test(code);
+  }, [code]);
 
   const updateScale = () => {
     if (containerRef.current) {
@@ -401,8 +626,8 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
       const availableWidth = rect.width - 32;
       const availableHeight = rect.height - 120;
 
-      const scaleW = availableWidth / 480;
-      const scaleH = availableHeight / 340;
+      const scaleW = availableWidth / (appletData.width || 600);
+      const scaleH = availableHeight / ((appletData.height || 500) + 50);
 
       let finalScale = Math.min(scaleW, scaleH);
       if (finalScale > 1) finalScale = 1;
@@ -422,20 +647,26 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
     updateScale();
 
     return () => observer.disconnect();
-  }, [codeIsApplet, isRunning]);
+  }, [isGuiApp, isRunning]);
 
   // Sync state on template load or code modifications
   useEffect(() => {
     if (appletData) {
       setVariables(appletData.variables);
+      setAppletBg(appletData.backgroundColor || '#ffffff');
+      setAppletFg(appletData.foregroundColor || 'black');
+      setStatusText('Applet started.');
       const initialInputs = {};
+      const initialCompStates = {};
       appletData.components.forEach(comp => {
+        initialCompStates[comp.name] = { text: comp.args[0] || '' };
         if (comp.type === 'TextField') {
           // Columns count (e.g. 15) is not text content. Set empty string default.
           initialInputs[comp.name] = comp.args[0] && !isNaN(comp.args[0]) ? '' : (comp.args[0] || '');
         }
       });
       setInputs(initialInputs);
+      setComponentStates(initialCompStates);
     }
   }, [appletData]);
 
@@ -488,7 +719,7 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
     const ctx = canvas.getContext('2d');
 
     // Clear / Set Background
-    const bg = appletData.backgroundColor;
+    const bg = appletBg;
     ctx.fillStyle = bg === 'black' ? '#000000' : (bg === 'white' ? '#ffffff' : bg);
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -498,74 +729,138 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
         ctx.fillStyle = draw.color || 'black';
         ctx.strokeStyle = draw.color || 'black';
 
-        const x = Number(evalExpr(draw.xExpr, variables, inputs));
-        const y = Number(evalExpr(draw.yExpr, variables, inputs));
+        const x = Number(evalExpr(draw.xExpr, variables, inputs, componentStates));
+        const y = Number(evalExpr(draw.yExpr, variables, inputs, componentStates));
 
         if (draw.type === 'drawString') {
-          const text = String(evalExpr(draw.textExpr, variables, inputs));
+          const text = String(evalExpr(draw.textExpr, variables, inputs, componentStates));
           ctx.font = draw.font || '14px sans-serif';
           ctx.fillText(text, x, y);
         } else if (draw.type === 'fillOval') {
-          const w = Number(evalExpr(draw.wExpr, variables, inputs));
-          const h = Number(evalExpr(draw.hExpr, variables, inputs));
+          const w = Number(evalExpr(draw.wExpr, variables, inputs, componentStates));
+          const h = Number(evalExpr(draw.hExpr, variables, inputs, componentStates));
           ctx.beginPath();
           ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, 2 * Math.PI);
           ctx.fill();
         } else if (draw.type === 'fillRect') {
-          const w = Number(evalExpr(draw.wExpr, variables, inputs));
-          const h = Number(evalExpr(draw.hExpr, variables, inputs));
+          const w = Number(evalExpr(draw.wExpr, variables, inputs, componentStates));
+          const h = Number(evalExpr(draw.hExpr, variables, inputs, componentStates));
           ctx.fillRect(x, y, w, h);
         } else if (draw.type === 'drawOval') {
-          const w = Number(evalExpr(draw.wExpr, variables, inputs));
-          const h = Number(evalExpr(draw.hExpr, variables, inputs));
+          const w = Number(evalExpr(draw.wExpr, variables, inputs, componentStates));
+          const h = Number(evalExpr(draw.hExpr, variables, inputs, componentStates));
           ctx.beginPath();
           ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, 2 * Math.PI);
           ctx.stroke();
         } else if (draw.type === 'drawRect') {
-          const w = Number(evalExpr(draw.wExpr, variables, inputs));
-          const h = Number(evalExpr(draw.hExpr, variables, inputs));
+          const w = Number(evalExpr(draw.wExpr, variables, inputs, componentStates));
+          const h = Number(evalExpr(draw.hExpr, variables, inputs, componentStates));
           ctx.strokeRect(x, y, w, h);
         }
       } catch (err) {
         console.warn('Canvas draw statement error:', err);
       }
     });
-  }, [appletData, variables, inputs]);
+  }, [appletData, variables, inputs, componentStates, isCompiling, isRunning, appletBg, appletFg]);
 
-  // Handle simulated button click
-  const handleButtonClick = (buttonName) => {
-    if (!appletData.actionPerformed) return;
+  const getCanvasMouseCoords = (e) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.round(((e.clientX - rect.left) / rect.width) * canvas.width);
+    const y = Math.round(((e.clientY - rect.top) / rect.height) * canvas.height);
+    return { x, y };
+  };
 
-    const assignments = appletData.actionPerformed.assignments;
+  const triggerMouseEvent = (eventName, eventObj) => {
+    const handler = appletData.mouseEvents && appletData.mouseEvents[eventName];
+    if (!handler) return;
+
+    const { meVar, assignments, bgChange, statusMsg } = handler;
+
+    const mouseInputs = {
+      ...inputs,
+      [`${meVar}.getX()`]: eventObj.x,
+      [`${meVar}.getY()`]: eventObj.y,
+    };
+
     setVariables(prev => {
       const newVars = { ...prev };
       assignments.forEach(assign => {
         const { varName, expr } = assign;
-        const resultVal = evalExpr(expr, prev, inputs);
-        newVars[varName] = resultVal;
+        newVars[varName] = evalExpr(expr, prev, mouseInputs, componentStates);
       });
       return newVars;
     });
+
+    if (bgChange) {
+      let nextBg = appletBg;
+      if (bgChange.startsWith('Color.')) {
+        nextBg = bgChange.replace('Color.', '').toLowerCase();
+      } else if (bgChange.includes('new Color')) {
+        const rgb = bgChange.match(/Color\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/);
+        if (rgb) {
+          nextBg = `rgb(${rgb[1]}, ${rgb[2]}, ${rgb[3]})`;
+        }
+      }
+      setAppletBg(nextBg);
+    }
+
+    if (statusMsg) {
+      const parsedStatus = String(evalExpr(statusMsg, variables, mouseInputs, componentStates));
+      setStatusText(parsedStatus);
+    }
+  };
+
+  // Handle simulated button click
+  const handleButtonClick = (buttonName) => {
+    const buttonComp = appletData.components.find(c => c.name === buttonName);
+    const buttonLabel = buttonComp ? (componentStates[buttonName]?.text || buttonComp.args[0] || '') : '';
+
+    if (!appletData.actionPerformed) return;
+
+    // Search for a matching branch in actionPerformed:
+    const matchingBranch = appletData.actionPerformed.find(b => 
+      b.target === buttonName || 
+      b.target === buttonLabel ||
+      b.target === 'default'
+    );
+
+    if (matchingBranch) {
+      matchingBranch.actions.forEach(action => {
+        if (action.type === 'setText') {
+          const val = String(evalExpr(action.expr, variables, inputs, componentStates));
+          setComponentStates(prev => ({
+            ...prev,
+            [action.component]: { ...prev[action.component], text: val }
+          }));
+        } else if (action.type === 'assign') {
+          const val = evalExpr(action.expr, variables, inputs, componentStates);
+          setVariables(prev => ({
+            ...prev,
+            [action.varName]: val
+          }));
+        }
+      });
+    }
   };
 
   const handleRestartMenu = () => {
     setVariables(appletData.variables);
+    setStatusText('Applet started.');
     const initialInputs = {};
+    const initialCompStates = {};
     appletData.components.forEach(comp => {
+      initialCompStates[comp.name] = { text: comp.args[0] || '' };
       if (comp.type === 'TextField') {
         initialInputs[comp.name] = comp.args[0] && !isNaN(comp.args[0]) ? '' : (comp.args[0] || '');
       }
     });
     setInputs(initialInputs);
+    setComponentStates(initialCompStates);
     setMenuOpen(false);
   };
 
-  const stopCode = async () => {
-    try {
-      await fetch(`${API_BASE}/stop`, { method: 'POST' });
-      statusMessage = 'Stopped';
-    } catch (err) { }
-  };
 
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60);
@@ -594,9 +889,9 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
   }
 
   // 1. RENDER NATIVE JAVA APPLET SIMULATOR
-  if (codeIsApplet) {
+  if (isGuiApp) {
     return (
-      <div ref={containerRef} className="w-full h-full bg-gradient-to-br from-slate-900 to-indigo-950 p-6 flex flex-col justify-between text-white overflow-hidden">
+      <div ref={containerRef} className="w-full h-full bg-gradient-to-br from-slate-900 to-indigo-950 p-6 flex flex-col justify-between text-white overflow-auto">
 
         {/* Top active state indicator */}
         <div className="flex justify-between items-center mb-4">
@@ -624,8 +919,10 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
             style={{
               transform: `scale(${scale})`,
               transformOrigin: 'center center',
+              width: `${appletData.width || 600}px`,
+              height: `${(appletData.height || 500) + 50}px`
             }}
-            className="w-[480px] h-[340px] shadow-2xl rounded-lg bg-slate-900 flex flex-col overflow-hidden border border-slate-800 relative shrink-0"
+            className="shadow-2xl rounded-lg bg-slate-900 flex flex-col overflow-hidden border border-slate-800 relative shrink-0"
           >
 
             {/* Title Bar */}
@@ -683,20 +980,26 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
             )}
 
             {/* Applet Panel Content (FlowLayout AWT Container & Canvas) */}
-            <div className="flex-1 relative overflow-hidden flex flex-col" style={{ backgroundColor: appletData.backgroundColor }}>
+            <div className="flex-1 relative overflow-hidden flex flex-col" style={{ backgroundColor: appletBg }}>
 
               {/* FlowLayout Components panel at the top */}
               {appletData.components.length > 0 && (
-                <div className="px-4 py-3 border-b border-slate-800 bg-slate-900/40 flex flex-wrap items-center justify-start gap-x-3 gap-y-2 shrink-0 z-10 select-none">
+                <div className="px-4 py-3 border-b border-slate-800 bg-slate-900/40 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 shrink-0 z-10 select-none">
                   {appletData.components.map((comp, idx) => {
                     if (comp.type === 'Label') {
+                      const labelText = componentStates[comp.name]?.text !== undefined 
+                        ? componentStates[comp.name].text 
+                        : (comp.args[0] || '');
                       return (
                         <span key={idx} className="text-[13px] text-slate-200 font-sans">
-                          {comp.args[0] || ''}
+                          {labelText}
                         </span>
                       );
                     }
                     if (comp.type === 'TextField') {
+                      const tfText = inputs[comp.name] !== undefined 
+                        ? inputs[comp.name] 
+                        : (comp.args[0] && !isNaN(comp.args[0]) ? '' : (comp.args[0] || ''));
                       return (
                         <input
                           key={idx}
@@ -705,12 +1008,21 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
                           style={{
                             width: comp.args[0] && !isNaN(comp.args[0]) ? `${Number(comp.args[0]) * 7 + 10}px` : '100px'
                           }}
-                          value={inputs[comp.name] || ''}
-                          onChange={(e) => setInputs(prev => ({ ...prev, [comp.name]: e.target.value }))}
+                          value={tfText}
+                          onChange={(e) => {
+                            setInputs(prev => ({ ...prev, [comp.name]: e.target.value }));
+                            setComponentStates(prev => ({
+                              ...prev,
+                              [comp.name]: { ...prev[comp.name], text: e.target.value }
+                            }));
+                          }}
                         />
                       );
                     }
                     if (comp.type === 'Button') {
+                      const btnText = componentStates[comp.name]?.text !== undefined 
+                        ? componentStates[comp.name].text 
+                        : (comp.args[0] || 'Button');
                       return (
                         <button
                           key={idx}
@@ -721,7 +1033,7 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
                             borderWidth: '1px'
                           }}
                         >
-                          {comp.args[0] || 'Button'}
+                          {btnText}
                         </button>
                       );
                     }
@@ -734,16 +1046,29 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
               <div className="flex-1 relative min-h-0 bg-transparent">
                 <canvas
                   ref={canvasRef}
-                  width={460}
-                  height={220}
+                  width={appletData.width || 600}
+                  height={appletData.height || 500}
                   className="absolute top-0 left-0 w-full h-full"
+                  onMouseEnter={(e) => triggerMouseEvent('mouseEntered', getCanvasMouseCoords(e))}
+                  onMouseLeave={(e) => triggerMouseEvent('mouseExited', getCanvasMouseCoords(e))}
+                  onMouseDown={(e) => triggerMouseEvent('mousePressed', getCanvasMouseCoords(e))}
+                  onMouseUp={(e) => triggerMouseEvent('mouseReleased', getCanvasMouseCoords(e))}
+                  onClick={(e) => triggerMouseEvent('mouseClicked', getCanvasMouseCoords(e))}
+                  onMouseMove={(e) => {
+                    const coords = getCanvasMouseCoords(e);
+                    if (e.buttons === 1) {
+                      triggerMouseEvent('mouseDragged', coords);
+                    } else {
+                      triggerMouseEvent('mouseMoved', coords);
+                    }
+                  }}
                 />
               </div>
             </div>
 
             {/* Applet Status Bar */}
             <div className="bg-[#0f172a] border-t border-slate-950 px-3 py-1 text-[11px] text-slate-400 font-sans select-none shrink-0">
-              {isRunning ? 'Applet started.' : 'Applet viewer initialized (Stopped).'}
+              {isRunning ? statusText : 'Applet viewer initialized (Stopped).'}
             </div>
 
           </div>
