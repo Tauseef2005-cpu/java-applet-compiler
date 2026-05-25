@@ -374,28 +374,34 @@ function parseJavaApplet(code) {
     });
   }
 
-  // 4. Parse member variables for state (e.g. String message = ""; or int x = 10;)
-  const varRegex = /(String|int|double)\s+(\w+)\s*=\s*([^;]+);/g;
-  while ((match = varRegex.exec(code)) !== null) {
+  // 4. Parse member variables for state (handles single and multi-declarations like int x = 40, y = 40;)
+  const varDeclRegex = /(String|int|double|float|char|boolean)\s+([^;]+);/g;
+  while ((match = varDeclRegex.exec(code)) !== null) {
     const type = match[1];
-    const name = match[2];
-    let val = match[3].trim();
-    if (type === 'String') {
-      val = val.replace(/^"|"$/g, '');
-    } else {
-      val = Number(val);
-    }
-    result.variables[name] = val;
+    const decls = match[2].split(',');
+    decls.forEach(decl => {
+      const parts = decl.split('=');
+      const name = parts[0].trim();
+      if (!name) return;
+      
+      let val = undefined;
+      if (parts.length > 1) {
+        val = parts[1].trim();
+        if (type === 'String') {
+          val = val.replace(/^"|"$/g, '');
+        } else if (type === 'int' || type === 'double' || type === 'float') {
+          val = Number(val);
+        } else if (type === 'boolean') {
+          val = val === 'true';
+        }
+      } else {
+        if (type === 'String') val = '';
+        else if (type === 'int' || type === 'double' || type === 'float') val = 0;
+        else if (type === 'boolean') val = false;
+      }
+      result.variables[name] = val;
+    });
   }
-
-  // Also catch uninitialized variables with simple defaults
-  declarations.forEach(d => {
-    if (d.type === 'String' && result.variables[d.name] === undefined) {
-      result.variables[d.name] = '';
-    } else if ((d.type === 'int' || d.type === 'double') && result.variables[d.name] === undefined) {
-      result.variables[d.name] = 0;
-    }
-  });
 
   // Parse Mouse Event Handlers
   const parseMouseEventMethod = (methodName) => {
@@ -407,6 +413,7 @@ function parseJavaApplet(code) {
     const statements = body.split(';');
     const assignments = [];
     let bgChange = null;
+    let statusMsg = null;
 
     statements.forEach(stmt => {
       const trimmed = stmt.trim();
@@ -424,9 +431,14 @@ function parseJavaApplet(code) {
       if (bgMatch) {
         bgChange = bgMatch[1].trim();
       }
+
+      const statusMatch = trimmed.match(/(?:\w+\.)?showStatus\(([^)]+)\)/);
+      if (statusMatch) {
+        statusMsg = statusMatch[1].trim();
+      }
     });
 
-    return { meVar: gName, assignments, bgChange };
+    return { meVar: gName, assignments, bgChange, statusMsg };
   };
 
   const mouseMethods = ['mouseEntered', 'mouseExited', 'mousePressed', 'mouseReleased', 'mouseClicked', 'mouseMoved', 'mouseDragged'];
@@ -592,6 +604,7 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
   const [scale, setScale] = useState(1);
   const [appletBg, setAppletBg] = useState('#ffffff');
   const [appletFg, setAppletFg] = useState('black');
+  const [statusText, setStatusText] = useState('Applet started.');
 
   // Parse code reactively
   const appletData = useMemo(() => parseJavaApplet(code), [code]);
@@ -642,6 +655,7 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
       setVariables(appletData.variables);
       setAppletBg(appletData.backgroundColor || '#ffffff');
       setAppletFg(appletData.foregroundColor || 'black');
+      setStatusText('Applet started.');
       const initialInputs = {};
       const initialCompStates = {};
       appletData.components.forEach(comp => {
@@ -762,7 +776,7 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
     const handler = appletData.mouseEvents && appletData.mouseEvents[eventName];
     if (!handler) return;
 
-    const { meVar, assignments, bgChange } = handler;
+    const { meVar, assignments, bgChange, statusMsg } = handler;
 
     const mouseInputs = {
       ...inputs,
@@ -774,7 +788,7 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
       const newVars = { ...prev };
       assignments.forEach(assign => {
         const { varName, expr } = assign;
-        newVars[varName] = evalExpr(expr, prev, mouseInputs);
+        newVars[varName] = evalExpr(expr, prev, mouseInputs, componentStates);
       });
       return newVars;
     });
@@ -790,6 +804,11 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
         }
       }
       setAppletBg(nextBg);
+    }
+
+    if (statusMsg) {
+      const parsedStatus = String(evalExpr(statusMsg, variables, mouseInputs, componentStates));
+      setStatusText(parsedStatus);
     }
   };
 
@@ -828,6 +847,7 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
 
   const handleRestartMenu = () => {
     setVariables(appletData.variables);
+    setStatusText('Applet started.');
     const initialInputs = {};
     const initialCompStates = {};
     appletData.components.forEach(comp => {
@@ -1048,7 +1068,7 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
 
             {/* Applet Status Bar */}
             <div className="bg-[#0f172a] border-t border-slate-950 px-3 py-1 text-[11px] text-slate-400 font-sans select-none shrink-0">
-              {isRunning ? 'Applet started.' : 'Applet viewer initialized (Stopped).'}
+              {isRunning ? statusText : 'Applet viewer initialized (Stopped).'}
             </div>
 
           </div>
