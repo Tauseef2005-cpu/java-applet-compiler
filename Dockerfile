@@ -1,11 +1,8 @@
 # Use Eclipse Temurin JDK 8 as the base image (ensures native JDK 8 is available)
 FROM eclipse-temurin:8-jdk
 
-# Install Node.js 18.x
-RUN apt-get update && apt-get install -y curl gnupg && \
-    curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
-    apt-get install -y nodejs && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+# Copy Node.js from official Node image (more robust than deprecated nodesource scripts)
+COPY --from=node:18 /usr/local /usr/local
 
 # Create application directory
 WORKDIR /app
