@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: java-applet-live-compiler
+    runtime: docker
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HEADLESS
+        value: "true"
