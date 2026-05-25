@@ -95,6 +95,8 @@ function parseJavaApplet(code) {
     title: 'Applet Viewer',
     backgroundColor: '#ffffff',
     foregroundColor: 'black',
+    width: 600,
+    height: 500,
     components: [],
     drawings: [],
     variables: {},
@@ -116,6 +118,12 @@ function parseJavaApplet(code) {
       result.title = `Applet Viewer: ${classMatch[1]}`;
     }
   }
+
+  // Parse Width & Height from <applet ... width=... height=...></applet>
+  const widthMatch = code.match(/width\s*=\s*["']?(\d+)["']?/i);
+  const heightMatch = code.match(/height\s*=\s*["']?(\d+)["']?/i);
+  if (widthMatch) result.width = parseInt(widthMatch[1], 10);
+  if (heightMatch) result.height = parseInt(heightMatch[1], 10);
 
   // 2. Parse Background Color
   const bgMatch = code.match(/setBackground\((Color\.\w+|new Color\([\d\s,]+\)|[^)]+)\)/);
@@ -456,8 +464,8 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
       const availableWidth = rect.width - 32;
       const availableHeight = rect.height - 120;
 
-      const scaleW = availableWidth / 480;
-      const scaleH = availableHeight / 340;
+      const scaleW = availableWidth / (appletData.width || 600);
+      const scaleH = availableHeight / ((appletData.height || 500) + 50);
 
       let finalScale = Math.min(scaleW, scaleH);
       if (finalScale > 1) finalScale = 1;
@@ -691,7 +699,7 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
   // 1. RENDER NATIVE JAVA APPLET SIMULATOR
   if (codeIsApplet) {
     return (
-      <div ref={containerRef} className="w-full h-full bg-gradient-to-br from-slate-900 to-indigo-950 p-6 flex flex-col justify-between text-white overflow-hidden">
+      <div ref={containerRef} className="w-full h-full bg-gradient-to-br from-slate-900 to-indigo-950 p-6 flex flex-col justify-between text-white overflow-auto">
 
         {/* Top active state indicator */}
         <div className="flex justify-between items-center mb-4">
@@ -719,8 +727,10 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
             style={{
               transform: `scale(${scale})`,
               transformOrigin: 'center center',
+              width: `${appletData.width || 600}px`,
+              height: `${(appletData.height || 500) + 50}px`
             }}
-            className="w-[480px] h-[340px] shadow-2xl rounded-lg bg-slate-900 flex flex-col overflow-hidden border border-slate-800 relative shrink-0"
+            className="shadow-2xl rounded-lg bg-slate-900 flex flex-col overflow-hidden border border-slate-800 relative shrink-0"
           >
 
             {/* Title Bar */}
@@ -829,8 +839,8 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
               <div className="flex-1 relative min-h-0 bg-transparent">
                 <canvas
                   ref={canvasRef}
-                  width={460}
-                  height={220}
+                  width={appletData.width || 600}
+                  height={appletData.height || 500}
                   className="absolute top-0 left-0 w-full h-full"
                   onMouseEnter={(e) => triggerMouseEvent('mouseEntered', getCanvasMouseCoords(e))}
                   onMouseLeave={(e) => triggerMouseEvent('mouseExited', getCanvasMouseCoords(e))}

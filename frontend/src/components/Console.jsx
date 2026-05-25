@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Terminal, Trash2, ArrowUpRight } from 'lucide-react';
+import { Terminal, Trash2, ArrowUpRight, ChevronDown } from 'lucide-react';
 
-export default function Console({ logs, onClear, onSendInput, isRunning }) {
+export default function Console({ logs, onClear, onSendInput, isRunning, onToggleCollapse }) {
   const scrollRef = useRef(null);
   const [inputValue, setInputValue] = useState('');
 
@@ -25,13 +25,24 @@ export default function Console({ logs, onClear, onSendInput, isRunning }) {
           <Terminal size={14} className="text-gray-400" />
           <span className="uppercase text-xs font-semibold tracking-wider text-gray-400">Console</span>
         </div>
-        <button 
-          onClick={onClear}
-          className="p-1 hover:bg-[#3c3c3c] rounded text-gray-400 transition-colors"
-          title="Clear Console"
-        >
-          <Trash2 size={14} />
-        </button>
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={onClear}
+            className="p-1 hover:bg-[#3c3c3c] rounded text-gray-400 transition-colors"
+            title="Clear Console"
+          >
+            <Trash2 size={14} />
+          </button>
+          {onToggleCollapse && (
+            <button 
+              onClick={onToggleCollapse}
+              className="p-1 hover:bg-[#3c3c3c] rounded text-gray-400 transition-colors"
+              title="Hide Console"
+            >
+              <ChevronDown size={14} />
+            </button>
+          )}
+        </div>
       </div>
       <div 
         ref={scrollRef}

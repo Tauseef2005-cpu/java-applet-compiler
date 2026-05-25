@@ -21,6 +21,7 @@ function App() {
   const [theme, setTheme] = useState('vs-dark'); // vs-dark or light
   const [isMobile, setIsMobile] = useState(false);
   const [activeTab, setActiveTab] = useState('editor'); // editor, preview, console
+  const [isConsoleVisible, setIsConsoleVisible] = useState(true);
 
 
   const debouncedCompile = useRef(null);
@@ -443,14 +444,25 @@ function App() {
           </div>
 
           {/* Console Panel (Bottom) */}
-          <div className="h-48 shrink-0">
-            <Console
-              logs={logs}
-              onClear={() => setLogs([])}
-              onSendInput={sendStdin}
-              isRunning={isRunning}
-            />
-          </div>
+          {isConsoleVisible ? (
+            <div className="h-48 shrink-0">
+              <Console
+                logs={logs}
+                onClear={() => setLogs([])}
+                onSendInput={sendStdin}
+                isRunning={isRunning}
+                onToggleCollapse={() => setIsConsoleVisible(false)}
+              />
+            </div>
+          ) : (
+            <button
+              onClick={() => setIsConsoleVisible(true)}
+              className="h-8 bg-[#252526] border-t border-[#3c3c3c] flex items-center px-4 gap-2 text-xs font-semibold text-gray-400 hover:bg-[#3c3c3c] hover:text-gray-200 transition-colors cursor-pointer select-none shrink-0"
+              title="Show Console"
+            >
+              <Terminal size={12} /> Show Console {logs.length > 0 && `(${logs.length})`}
+            </button>
+          )}
         </>
       )}
     </div>
