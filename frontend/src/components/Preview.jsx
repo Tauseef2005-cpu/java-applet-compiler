@@ -94,12 +94,14 @@ function parseJavaApplet(code) {
   const result = {
     title: 'Applet Viewer',
     backgroundColor: '#ffffff',
+    foregroundColor: 'black',
     components: [],
     drawings: [],
     variables: {},
     actionPerformed: null,
     hasAnimation: false,
-    animationStep: null
+    animationStep: null,
+    mouseEvents: {}
   };
 
   if (!code) return result;
@@ -125,6 +127,20 @@ function parseJavaApplet(code) {
       const rgbMatch = bgVal.match(/Color\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/);
       if (rgbMatch) {
         result.backgroundColor = `rgb(${rgbMatch[1]}, ${rgbMatch[2]}, ${rgbMatch[3]})`;
+      }
+    }
+  }
+
+  // Parse Foreground Color
+  const fgMatch = code.match(/setForeground\((Color\.\w+|new Color\([\d\s,]+\)|[^)]+)\)/);
+  if (fgMatch) {
+    const fgVal = fgMatch[1].trim();
+    if (fgVal.startsWith('Color.')) {
+      result.foregroundColor = fgVal.replace('Color.', '').toLowerCase();
+    } else if (fgVal.includes('new Color')) {
+      const rgbMatch = fgVal.match(/Color\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/);
+      if (rgbMatch) {
+        result.foregroundColor = `rgb(${rgbMatch[1]}, ${rgbMatch[2]}, ${rgbMatch[3]})`;
       }
     }
   }
@@ -220,13 +236,51 @@ function parseJavaApplet(code) {
     }
   });
 
+  // Parse Mouse Event Handlers
+  const parseMouseEventMethod = (methodName) => {
+    const sig = new RegExp(`public\\s+void\\s+${methodName}\\s*\\(\\s*MouseEvent\\s+(\\w+)\\s*\\)\\s*\\{`);
+    const method = getMethodBody(code, sig);
+    if (!method) return null;
+
+    const { gName, body } = method;
+    const statements = body.split(';');
+    const assignments = [];
+    let bgChange = null;
+
+    statements.forEach(stmt => {
+      const trimmed = stmt.trim();
+      if (!trimmed) return;
+
+      const assignMatch = trimmed.match(/^(\w+)\s*=\s*([\s\S]+)$/);
+      if (assignMatch) {
+        assignments.push({
+          varName: assignMatch[1].trim(),
+          expr: assignMatch[2].trim()
+        });
+      }
+
+      const bgMatch = trimmed.match(/setBackground\((Color\.\w+|new Color\([\d\s,]+\)|[^)]+)\)/);
+      if (bgMatch) {
+        bgChange = bgMatch[1].trim();
+      }
+    });
+
+    return { meVar: gName, assignments, bgChange };
+  };
+
+  const mouseMethods = ['mouseEntered', 'mouseExited', 'mousePressed', 'mouseReleased', 'mouseClicked', 'mouseMoved', 'mouseDragged'];
+  mouseMethods.forEach(m => {
+    const res = parseMouseEventMethod(m);
+    if (res) result.mouseEvents[m] = res;
+  });
+
   // 5. Parse paint operations using brace matching helper
   const paintSig = /public\s+void\s+paint\s*\(\s*Graphics\s+(\w+)\s*\)\s*\{/;
   const paintMethod = getMethodBody(code, paintSig);
   if (paintMethod) {
     const { gName, body } = paintMethod;
     const statements = body.split(';');
-    let currentColor = 'black';
+    let currentColor = result.foregroundColor || 'black';
     let currentFont = '14px sans-serif';
 
     statements.forEach(stmt => {
@@ -384,6 +438,8 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const [scale, setScale] = useState(1);
+  const [appletBg, setAppletBg] = useState('#ffffff');
+  const [appletFg, setAppletFg] = useState('black');
 
   // Parse code reactively
   const appletData = useMemo(() => parseJavaApplet(code), [code]);
@@ -427,6 +483,8 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
   useEffect(() => {
     if (appletData) {
       setVariables(appletData.variables);
+      setAppletBg(appletData.backgroundColor || '#ffffff');
+      setAppletFg(appletData.foregroundColor || 'black');
       const initialInputs = {};
       appletData.components.forEach(comp => {
         if (comp.type === 'TextField') {
@@ -487,7 +545,7 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
     const ctx = canvas.getContext('2d');
 
     // Clear / Set Background
-    const bg = appletData.backgroundColor;
+    const bg = appletBg;
     ctx.fillStyle = bg === 'black' ? '#000000' : (bg === 'white' ? '#ffffff' : bg);
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -529,7 +587,51 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
         console.warn('Canvas draw statement error:', err);
       }
     });
-  }, [appletData, variables, inputs, isCompiling, isRunning]);
+  }, [appletData, variables, inputs, isCompiling, isRunning, appletBg, appletFg]);
+
+  const getCanvasMouseCoords = (e) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.round(((e.clientX - rect.left) / rect.width) * canvas.width);
+    const y = Math.round(((e.clientY - rect.top) / rect.height) * canvas.height);
+    return { x, y };
+  };
+
+  const triggerMouseEvent = (eventName, eventObj) => {
+    const handler = appletData.mouseEvents && appletData.mouseEvents[eventName];
+    if (!handler) return;
+
+    const { meVar, assignments, bgChange } = handler;
+
+    const mouseInputs = {
+      ...inputs,
+      [`${meVar}.getX()`]: eventObj.x,
+      [`${meVar}.getY()`]: eventObj.y,
+    };
+
+    setVariables(prev => {
+      const newVars = { ...prev };
+      assignments.forEach(assign => {
+        const { varName, expr } = assign;
+        newVars[varName] = evalExpr(expr, prev, mouseInputs);
+      });
+      return newVars;
+    });
+
+    if (bgChange) {
+      let nextBg = appletBg;
+      if (bgChange.startsWith('Color.')) {
+        nextBg = bgChange.replace('Color.', '').toLowerCase();
+      } else if (bgChange.includes('new Color')) {
+        const rgb = bgChange.match(/Color\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/);
+        if (rgb) {
+          nextBg = `rgb(${rgb[1]}, ${rgb[2]}, ${rgb[3]})`;
+        }
+      }
+      setAppletBg(nextBg);
+    }
+  };
 
   // Handle simulated button click
   const handleButtonClick = (buttonName) => {
@@ -676,7 +778,7 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
             )}
 
             {/* Applet Panel Content (FlowLayout AWT Container & Canvas) */}
-            <div className="flex-1 relative overflow-hidden flex flex-col" style={{ backgroundColor: appletData.backgroundColor }}>
+            <div className="flex-1 relative overflow-hidden flex flex-col" style={{ backgroundColor: appletBg }}>
 
               {/* FlowLayout Components panel at the top */}
               {appletData.components.length > 0 && (
@@ -730,6 +832,19 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
                   width={460}
                   height={220}
                   className="absolute top-0 left-0 w-full h-full"
+                  onMouseEnter={(e) => triggerMouseEvent('mouseEntered', getCanvasMouseCoords(e))}
+                  onMouseLeave={(e) => triggerMouseEvent('mouseExited', getCanvasMouseCoords(e))}
+                  onMouseDown={(e) => triggerMouseEvent('mousePressed', getCanvasMouseCoords(e))}
+                  onMouseUp={(e) => triggerMouseEvent('mouseReleased', getCanvasMouseCoords(e))}
+                  onClick={(e) => triggerMouseEvent('mouseClicked', getCanvasMouseCoords(e))}
+                  onMouseMove={(e) => {
+                    const coords = getCanvasMouseCoords(e);
+                    if (e.buttons === 1) {
+                      triggerMouseEvent('mouseDragged', coords);
+                    } else {
+                      triggerMouseEvent('mouseMoved', coords);
+                    }
+                  }}
                 />
               </div>
             </div>
