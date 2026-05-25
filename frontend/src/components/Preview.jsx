@@ -94,12 +94,51 @@ const evalExpr = (expr, variables, inputs, componentStates = {}) => {
 
 const parseActionPerformed = (body) => {
   const branches = [];
-  const branchRegex = /(?:if|else\s+if)\s*\(([^)]+)\)\s*\{([^}]+)\}/g;
-  let match;
-  while ((match = branchRegex.exec(body)) !== null) {
-    const condition = match[1];
-    const blockBody = match[2];
-    
+  let index = 0;
+  while (index < body.length) {
+    const nextIf = body.indexOf('if', index);
+    if (nextIf === -1) break;
+
+    let isElseIf = false;
+    let checkElse = body.substring(Math.max(0, nextIf - 10), nextIf).trim();
+    if (checkElse.endsWith('else')) {
+      isElseIf = true;
+    }
+
+    const openParen = body.indexOf('(', nextIf);
+    if (openParen === -1) {
+      index = nextIf + 2;
+      continue;
+    }
+
+    let parenCount = 1;
+    let closeParen = openParen + 1;
+    while (parenCount > 0 && closeParen < body.length) {
+      if (body[closeParen] === '(') parenCount++;
+      else if (body[closeParen] === ')') parenCount--;
+      closeParen++;
+    }
+    closeParen--;
+
+    const condition = body.substring(openParen + 1, closeParen);
+
+    const openBrace = body.indexOf('{', closeParen);
+    if (openBrace === -1) {
+      index = closeParen + 1;
+      continue;
+    }
+
+    let braceCount = 1;
+    let closeBrace = openBrace + 1;
+    while (braceCount > 0 && closeBrace < body.length) {
+      if (body[closeBrace] === '{') braceCount++;
+      else if (body[closeBrace] === '}') braceCount--;
+      closeBrace++;
+    }
+    closeBrace--;
+
+    const blockBody = body.substring(openBrace + 1, closeBrace);
+
     let target = null;
     const strMatch = condition.match(/"([^"]+)"/);
     if (strMatch) {
@@ -110,13 +149,13 @@ const parseActionPerformed = (body) => {
         target = varMatch[1];
       }
     }
-    
+
     const actions = [];
     const lines = blockBody.split(';');
     lines.forEach(line => {
       const trimmed = line.trim();
       if (!trimmed) return;
-      
+
       const setTextMatch = trimmed.match(/^(\w+)\.setText\((.*?)\)$/);
       if (setTextMatch) {
         actions.push({
@@ -125,7 +164,7 @@ const parseActionPerformed = (body) => {
           expr: setTextMatch[2].trim()
         });
       }
-      
+
       const assignMatch = trimmed.match(/^(\w+)\s*=\s*(.+)$/);
       if (assignMatch && !trimmed.includes('.setText(')) {
         actions.push({
@@ -135,19 +174,21 @@ const parseActionPerformed = (body) => {
         });
       }
     });
-    
+
     if (target) {
       branches.push({ target, actions });
     }
+
+    index = closeBrace + 1;
   }
-  
+
   if (branches.length === 0) {
     const actions = [];
     const lines = body.split(';');
     lines.forEach(line => {
       const trimmed = line.trim();
       if (!trimmed) return;
-      
+
       const setTextMatch = trimmed.match(/^(\w+)\.setText\((.*?)\)$/);
       if (setTextMatch) {
         actions.push({
@@ -156,7 +197,7 @@ const parseActionPerformed = (body) => {
           expr: setTextMatch[2].trim()
         });
       }
-      
+
       const assignMatch = trimmed.match(/^(\w+)\s*=\s*(.+)$/);
       if (assignMatch && !trimmed.includes('.setText(')) {
         actions.push({
@@ -170,7 +211,7 @@ const parseActionPerformed = (body) => {
       branches.push({ target: 'default', actions });
     }
   }
-  
+
   return branches;
 };
 
@@ -923,7 +964,7 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
 
               {/* FlowLayout Components panel at the top */}
               {appletData.components.length > 0 && (
-                <div className="px-4 py-3 border-b border-slate-800 bg-slate-900/40 flex flex-wrap items-center justify-start gap-x-3 gap-y-2 shrink-0 z-10 select-none">
+                <div className="px-4 py-3 border-b border-slate-800 bg-slate-900/40 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 shrink-0 z-10 select-none">
                   {appletData.components.map((comp, idx) => {
                     if (comp.type === 'Label') {
                       const labelText = componentStates[comp.name]?.text !== undefined 
