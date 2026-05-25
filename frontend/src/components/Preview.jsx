@@ -25,7 +25,7 @@ function getMethodBody(code, signatureRegex) {
 }
 
 // Java AWT expression evaluator
-const evalExpr = (expr, variables, inputs) => {
+const evalExpr = (expr, variables, inputs, componentStates = {}) => {
   if (expr === undefined || expr === null) return 0;
   let cleaned = String(expr).trim();
 
@@ -38,10 +38,13 @@ const evalExpr = (expr, variables, inputs) => {
       return trimmed.slice(1, -1);
     }
 
-    // Check if AWT textfield value getter (e.g., textField.getText())
+    // Check if AWT component getter (e.g., label/textField.getText())
     const textfieldGetterMatch = trimmed.match(/^(\w+)\.getText\(\)$/);
     if (textfieldGetterMatch) {
       const name = textfieldGetterMatch[1];
+      if (componentStates[name] !== undefined) {
+        return componentStates[name].text;
+      }
       return inputs[name] !== undefined ? inputs[name] : '';
     }
 
@@ -87,6 +90,88 @@ const evalExpr = (expr, variables, inputs) => {
   }
 
   return resolveToken(cleaned);
+};
+
+const parseActionPerformed = (body) => {
+  const branches = [];
+  const branchRegex = /(?:if|else\s+if)\s*\(([^)]+)\)\s*\{([^}]+)\}/g;
+  let match;
+  while ((match = branchRegex.exec(body)) !== null) {
+    const condition = match[1];
+    const blockBody = match[2];
+    
+    let target = null;
+    const strMatch = condition.match(/"([^"]+)"/);
+    if (strMatch) {
+      target = strMatch[1];
+    } else {
+      const varMatch = condition.match(/==\s*(\w+)/) || condition.match(/equals\(\s*(\w+)\s*\)/);
+      if (varMatch) {
+        target = varMatch[1];
+      }
+    }
+    
+    const actions = [];
+    const lines = blockBody.split(';');
+    lines.forEach(line => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      
+      const setTextMatch = trimmed.match(/^(\w+)\.setText\((.*?)\)$/);
+      if (setTextMatch) {
+        actions.push({
+          type: 'setText',
+          component: setTextMatch[1],
+          expr: setTextMatch[2].trim()
+        });
+      }
+      
+      const assignMatch = trimmed.match(/^(\w+)\s*=\s*(.+)$/);
+      if (assignMatch && !trimmed.includes('.setText(')) {
+        actions.push({
+          type: 'assign',
+          varName: assignMatch[1].trim(),
+          expr: assignMatch[2].trim()
+        });
+      }
+    });
+    
+    if (target) {
+      branches.push({ target, actions });
+    }
+  }
+  
+  if (branches.length === 0) {
+    const actions = [];
+    const lines = body.split(';');
+    lines.forEach(line => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      
+      const setTextMatch = trimmed.match(/^(\w+)\.setText\((.*?)\)$/);
+      if (setTextMatch) {
+        actions.push({
+          type: 'setText',
+          component: setTextMatch[1],
+          expr: setTextMatch[2].trim()
+        });
+      }
+      
+      const assignMatch = trimmed.match(/^(\w+)\s*=\s*(.+)$/);
+      if (assignMatch && !trimmed.includes('.setText(')) {
+        actions.push({
+          type: 'assign',
+          varName: assignMatch[1].trim(),
+          expr: assignMatch[2].trim()
+        });
+      }
+    });
+    if (actions.length > 0) {
+      branches.push({ target: 'default', actions });
+    }
+  }
+  
+  return branches;
 };
 
 // Parser to extract components and drawings from Java Applet code
@@ -419,16 +504,7 @@ function parseJavaApplet(code) {
   const apSig = /public\s+void\s+actionPerformed\s*\(\s*ActionEvent\s+(\w+)\s*\)\s*\{/;
   const apMethod = getMethodBody(code, apSig);
   if (apMethod) {
-    const { body } = apMethod;
-    const assignRegex = /(\w+)\s*=\s*([^;]+);/g;
-    let assMatch;
-    const assignments = [];
-    while ((assMatch = assignRegex.exec(body)) !== null) {
-      const varName = assMatch[1];
-      const expr = assMatch[2].trim();
-      assignments.push({ varName, expr });
-    }
-    result.actionPerformed = { assignments };
+    result.actionPerformed = parseActionPerformed(apMethod.body);
   }
 
   // 7. Animation check (implements Runnable)
@@ -482,25 +558,12 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
   // Applet variables & inputs states
   const [variables, setVariables] = useState({});
   const [inputs, setInputs] = useState({});
+  const [componentStates, setComponentStates] = useState({});
 
   const isGuiApp = useMemo(() => {
     if (!code) return false;
-    return code.includes('extends Applet') || 
-           code.includes('extends java.applet.Applet') ||
-           code.includes('extends JApplet') || 
-           code.includes('extends javax.swing.JApplet') ||
-           code.includes('extends Frame') || 
-           code.includes('extends java.awt.Frame') ||
-           code.includes('extends JFrame') || 
-           code.includes('extends javax.swing.JFrame') ||
-           code.includes('new Frame') || 
-           code.includes('new java.awt.Frame') ||
-           code.includes('new JFrame') || 
-           code.includes('new javax.swing.JFrame') ||
-           code.includes('new Window') ||
-           code.includes('new Dialog') ||
-           code.includes('new Panel') ||
-           code.includes('new JPanel');
+    const guiRegex = /\b(extends\s+(?:java\.applet\.)?Applet|extends\s+(?:javax\.swing\.)?JApplet|extends\s+(?:java\.awt\.)?Frame|extends\s+(?:javax\.swing\.)?JFrame|new\s+(?:java\.awt\.)?Frame|new\s+(?:javax\.swing\.)?JFrame|new\s+(?:java\.awt\.)?Window|new\s+(?:java\.awt\.)?Dialog|new\s+(?:java\.awt\.)?Panel|new\s+(?:javax\.swing\.)?JPanel)\b/;
+    return guiRegex.test(code);
   }, [code]);
 
   const updateScale = () => {
@@ -539,13 +602,16 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
       setAppletBg(appletData.backgroundColor || '#ffffff');
       setAppletFg(appletData.foregroundColor || 'black');
       const initialInputs = {};
+      const initialCompStates = {};
       appletData.components.forEach(comp => {
+        initialCompStates[comp.name] = { text: comp.args[0] || '' };
         if (comp.type === 'TextField') {
           // Columns count (e.g. 15) is not text content. Set empty string default.
           initialInputs[comp.name] = comp.args[0] && !isNaN(comp.args[0]) ? '' : (comp.args[0] || '');
         }
       });
       setInputs(initialInputs);
+      setComponentStates(initialCompStates);
     }
   }, [appletData]);
 
@@ -608,39 +674,39 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
         ctx.fillStyle = draw.color || 'black';
         ctx.strokeStyle = draw.color || 'black';
 
-        const x = Number(evalExpr(draw.xExpr, variables, inputs));
-        const y = Number(evalExpr(draw.yExpr, variables, inputs));
+        const x = Number(evalExpr(draw.xExpr, variables, inputs, componentStates));
+        const y = Number(evalExpr(draw.yExpr, variables, inputs, componentStates));
 
         if (draw.type === 'drawString') {
-          const text = String(evalExpr(draw.textExpr, variables, inputs));
+          const text = String(evalExpr(draw.textExpr, variables, inputs, componentStates));
           ctx.font = draw.font || '14px sans-serif';
           ctx.fillText(text, x, y);
         } else if (draw.type === 'fillOval') {
-          const w = Number(evalExpr(draw.wExpr, variables, inputs));
-          const h = Number(evalExpr(draw.hExpr, variables, inputs));
+          const w = Number(evalExpr(draw.wExpr, variables, inputs, componentStates));
+          const h = Number(evalExpr(draw.hExpr, variables, inputs, componentStates));
           ctx.beginPath();
           ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, 2 * Math.PI);
           ctx.fill();
         } else if (draw.type === 'fillRect') {
-          const w = Number(evalExpr(draw.wExpr, variables, inputs));
-          const h = Number(evalExpr(draw.hExpr, variables, inputs));
+          const w = Number(evalExpr(draw.wExpr, variables, inputs, componentStates));
+          const h = Number(evalExpr(draw.hExpr, variables, inputs, componentStates));
           ctx.fillRect(x, y, w, h);
         } else if (draw.type === 'drawOval') {
-          const w = Number(evalExpr(draw.wExpr, variables, inputs));
-          const h = Number(evalExpr(draw.hExpr, variables, inputs));
+          const w = Number(evalExpr(draw.wExpr, variables, inputs, componentStates));
+          const h = Number(evalExpr(draw.hExpr, variables, inputs, componentStates));
           ctx.beginPath();
           ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, 2 * Math.PI);
           ctx.stroke();
         } else if (draw.type === 'drawRect') {
-          const w = Number(evalExpr(draw.wExpr, variables, inputs));
-          const h = Number(evalExpr(draw.hExpr, variables, inputs));
+          const w = Number(evalExpr(draw.wExpr, variables, inputs, componentStates));
+          const h = Number(evalExpr(draw.hExpr, variables, inputs, componentStates));
           ctx.strokeRect(x, y, w, h);
         }
       } catch (err) {
         console.warn('Canvas draw statement error:', err);
       }
     });
-  }, [appletData, variables, inputs, isCompiling, isRunning, appletBg, appletFg]);
+  }, [appletData, variables, inputs, componentStates, isCompiling, isRunning, appletBg, appletFg]);
 
   const getCanvasMouseCoords = (e) => {
     const canvas = canvasRef.current;
@@ -688,29 +754,49 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
 
   // Handle simulated button click
   const handleButtonClick = (buttonName) => {
+    const buttonComp = appletData.components.find(c => c.name === buttonName);
+    const buttonLabel = buttonComp ? (componentStates[buttonName]?.text || buttonComp.args[0] || '') : '';
+
     if (!appletData.actionPerformed) return;
 
-    const assignments = appletData.actionPerformed.assignments;
-    setVariables(prev => {
-      const newVars = { ...prev };
-      assignments.forEach(assign => {
-        const { varName, expr } = assign;
-        const resultVal = evalExpr(expr, prev, inputs);
-        newVars[varName] = resultVal;
+    // Search for a matching branch in actionPerformed:
+    const matchingBranch = appletData.actionPerformed.find(b => 
+      b.target === buttonName || 
+      b.target === buttonLabel ||
+      b.target === 'default'
+    );
+
+    if (matchingBranch) {
+      matchingBranch.actions.forEach(action => {
+        if (action.type === 'setText') {
+          const val = String(evalExpr(action.expr, variables, inputs, componentStates));
+          setComponentStates(prev => ({
+            ...prev,
+            [action.component]: { ...prev[action.component], text: val }
+          }));
+        } else if (action.type === 'assign') {
+          const val = evalExpr(action.expr, variables, inputs, componentStates);
+          setVariables(prev => ({
+            ...prev,
+            [action.varName]: val
+          }));
+        }
       });
-      return newVars;
-    });
+    }
   };
 
   const handleRestartMenu = () => {
     setVariables(appletData.variables);
     const initialInputs = {};
+    const initialCompStates = {};
     appletData.components.forEach(comp => {
+      initialCompStates[comp.name] = { text: comp.args[0] || '' };
       if (comp.type === 'TextField') {
         initialInputs[comp.name] = comp.args[0] && !isNaN(comp.args[0]) ? '' : (comp.args[0] || '');
       }
     });
     setInputs(initialInputs);
+    setComponentStates(initialCompStates);
     setMenuOpen(false);
   };
 
@@ -840,13 +926,19 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
                 <div className="px-4 py-3 border-b border-slate-800 bg-slate-900/40 flex flex-wrap items-center justify-start gap-x-3 gap-y-2 shrink-0 z-10 select-none">
                   {appletData.components.map((comp, idx) => {
                     if (comp.type === 'Label') {
+                      const labelText = componentStates[comp.name]?.text !== undefined 
+                        ? componentStates[comp.name].text 
+                        : (comp.args[0] || '');
                       return (
                         <span key={idx} className="text-[13px] text-slate-200 font-sans">
-                          {comp.args[0] || ''}
+                          {labelText}
                         </span>
                       );
                     }
                     if (comp.type === 'TextField') {
+                      const tfText = inputs[comp.name] !== undefined 
+                        ? inputs[comp.name] 
+                        : (comp.args[0] && !isNaN(comp.args[0]) ? '' : (comp.args[0] || ''));
                       return (
                         <input
                           key={idx}
@@ -855,12 +947,21 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
                           style={{
                             width: comp.args[0] && !isNaN(comp.args[0]) ? `${Number(comp.args[0]) * 7 + 10}px` : '100px'
                           }}
-                          value={inputs[comp.name] || ''}
-                          onChange={(e) => setInputs(prev => ({ ...prev, [comp.name]: e.target.value }))}
+                          value={tfText}
+                          onChange={(e) => {
+                            setInputs(prev => ({ ...prev, [comp.name]: e.target.value }));
+                            setComponentStates(prev => ({
+                              ...prev,
+                              [comp.name]: { ...prev[comp.name], text: e.target.value }
+                            }));
+                          }}
                         />
                       );
                     }
                     if (comp.type === 'Button') {
+                      const btnText = componentStates[comp.name]?.text !== undefined 
+                        ? componentStates[comp.name].text 
+                        : (comp.args[0] || 'Button');
                       return (
                         <button
                           key={idx}
@@ -871,7 +972,7 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
                             borderWidth: '1px'
                           }}
                         >
-                          {comp.args[0] || 'Button'}
+                          {btnText}
                         </button>
                       );
                     }

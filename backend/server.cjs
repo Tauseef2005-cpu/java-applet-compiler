@@ -110,23 +110,10 @@ function injectMainMethod(code, className) {
 
 function isGuiCode(code) {
     if (!code) return false;
-    return code.includes('extends Applet') || 
-           code.includes('extends java.applet.Applet') ||
-           code.includes('extends JApplet') || 
-           code.includes('extends javax.swing.JApplet') ||
-           code.includes('extends Frame') || 
-           code.includes('extends java.awt.Frame') ||
-           code.includes('extends JFrame') || 
-           code.includes('extends javax.swing.JFrame') ||
-           code.includes('new Frame') || 
-           code.includes('new java.awt.Frame') ||
-           code.includes('new JFrame') || 
-           code.includes('new javax.swing.JFrame') ||
-           code.includes('new Window') ||
-           code.includes('new Dialog') ||
-           code.includes('new Panel') ||
-           code.includes('new JPanel');
+    const guiRegex = /\b(extends\s+(?:java\.applet\.)?Applet|extends\s+(?:javax\.swing\.)?JApplet|extends\s+(?:java\.awt\.)?Frame|extends\s+(?:javax\.swing\.)?JFrame|new\s+(?:java\.awt\.)?Frame|new\s+(?:javax\.swing\.)?JFrame|new\s+(?:java\.awt\.)?Window|new\s+(?:java\.awt\.)?Dialog|new\s+(?:java\.awt\.)?Panel|new\s+(?:javax\.swing\.)?JPanel)\b/;
+    return guiRegex.test(code);
 }
+
 
 
 app.post('/compile', (req, res) => {
