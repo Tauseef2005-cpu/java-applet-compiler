@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: java-applet-live-compiler
+    name: appletlivecompiler
     runtime: docker
     plan: free
     envVars:

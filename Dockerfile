@@ -38,4 +38,4 @@ ENV PORT=3000
 
 # Start Express server from backend directory
 WORKDIR /app/backend
-CMD ["node", "server.js"]
+CMD ["node", "server.cjs"]

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Play, Coffee, Terminal, Cpu, Clock, HelpCircle, XCircle, AlertCircle, MonitorPlay, X, RotateCcw, ChevronDown, Check, Info } from 'lucide-react';
 
+const API_BASE = "https://java-applet-compiler.onrender.com";
 
 // Helper function to extract method body with balanced braces
 function getMethodBody(code, signatureRegex) {
@@ -378,7 +379,7 @@ function parseJavaApplet(code) {
   return result;
 }
 
-export default function Preview({ code, isRunning, isCompiling, processInfo, exitCode, statusMessage, stopCode }) {
+export default function Preview({ code, isRunning, isCompiling, processInfo, exitCode, statusMessage }) {
   const [elapsedTime, setElapsedTime] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const canvasRef = useRef(null);
@@ -559,6 +560,12 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
     setMenuOpen(false);
   };
 
+  const stopCode = async () => {
+    try {
+      await fetch(`${API_BASE}/stop`, { method: 'POST' });
+      statusMessage = 'Stopped';
+    } catch (err) { }
+  };
 
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60);

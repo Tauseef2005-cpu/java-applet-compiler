@@ -1,14 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Split from 'react-split';
-import { Play, Square, RotateCcw, Terminal, Code2, Folder, Sun, Moon } from 'lucide-react';
+import { Play, Square, RotateCcw, Settings, Terminal, Code2, Folder, LayoutTemplate } from 'lucide-react';
 import Editor from './components/Editor';
 import Preview from './components/Preview';
 import Console from './components/Console';
-import { defaultTemplate } from './templates/ExampleTemplates';
+import { defaultTemplate, animationTemplate, textFieldTemplate } from './templates/ExampleTemplates';
 
-const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-  ? 'http://localhost:3000'
-  : window.location.origin;
+const API_BASE = "https://java-applet-compiler.onrender.com";
 
 function App() {
   const [code, setCode] = useState(defaultTemplate);
@@ -21,7 +19,7 @@ function App() {
   const [theme, setTheme] = useState('vs-dark'); // vs-dark or light
   const [isMobile, setIsMobile] = useState(false);
   const [activeTab, setActiveTab] = useState('editor'); // editor, preview, console
-
+  const [activeTemplateName, setActiveTemplateName] = useState('Hello World');
 
   const debouncedCompile = useRef(null);
 
@@ -198,7 +196,14 @@ function App() {
     }
   };
 
-
+  const loadTemplate = (name, template) => {
+    if (isRunning) {
+      stopCode();
+    }
+    setActiveTemplateName(name);
+    setCode(template);
+    compileCode(template);
+  };
 
   return (
     <div className="h-screen flex flex-col bg-[#090d16] text-[#cbd5e1] font-sans overflow-hidden">
@@ -213,34 +218,59 @@ function App() {
           </h1>
         </div>
         <div className="flex items-center gap-2 sm:gap-4">
-          <button
-            onClick={() => setTheme(theme === 'vs-dark' ? 'light' : 'vs-dark')}
-            className={`relative inline-flex h-8 w-16 shrink-0 cursor-pointer items-center rounded-full border transition-all duration-300 ease-in-out focus:outline-none justify-between px-2.5 shadow-[inset_0_2px_4px_rgba(0,0,0,0.4)] ${
-              theme === 'vs-dark' 
-                ? 'bg-[#0b0f19] border-slate-800 text-slate-500' 
-                : 'bg-sky-100/80 border-sky-200 text-slate-400'
-            }`}
-            title="Toggle Theme"
-          >
-            {/* Background Icons */}
-            <Sun size={12} className={`transition-opacity duration-300 ${theme === 'vs-dark' ? 'opacity-30 text-slate-600' : 'opacity-100 text-amber-500 font-bold'}`} />
-            <Moon size={12} className={`transition-opacity duration-300 ${theme === 'vs-dark' ? 'opacity-100 text-blue-400 font-bold' : 'opacity-30 text-slate-400'}`} />
-            
-            {/* Sliding Knob */}
-            <span
-              className={`absolute top-[4px] left-[4px] h-6 w-6 transform rounded-full shadow-[0_2px_6px_rgba(0,0,0,0.3)] transition-all duration-300 ease-in-out flex items-center justify-center ${
-                theme === 'vs-dark' 
-                  ? 'translate-x-8 bg-gradient-to-tr from-indigo-600 to-blue-500 text-white shadow-[0_0_8px_rgba(99,102,241,0.6)]' 
-                  : 'translate-x-0 bg-gradient-to-tr from-amber-400 to-yellow-300 text-amber-950 shadow-[0_0_8px_rgba(245,158,11,0.6)]'
-              }`}
-            >
-              {theme === 'vs-dark' ? (
-                <Moon size={12} fill="currentColor" className="rotate-[360deg] transition-transform duration-500" />
-              ) : (
-                <Sun size={12} fill="currentColor" className="rotate-0 transition-transform duration-500" />
-              )}
-            </span>
-          </button>
+          {!isMobile ? (
+            <div className="flex gap-2">
+              <button
+                onClick={() => loadTemplate('Hello World', defaultTemplate)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-300 hover:text-blue-400 hover:bg-[#1a2035] rounded transition-colors"
+              >
+                <LayoutTemplate size={16} /> Hello World
+              </button>
+              <button
+                onClick={() => loadTemplate('Animation', animationTemplate)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-300 hover:text-blue-400 hover:bg-[#1a2035] rounded transition-colors"
+              >
+                <LayoutTemplate size={16} /> Animation
+              </button>
+              <button
+                onClick={() => loadTemplate('TextField Example', textFieldTemplate)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-300 hover:text-blue-400 hover:bg-[#1a2035] rounded transition-colors"
+              >
+                <LayoutTemplate size={16} /> TextField Example
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1 bg-[#1a2035] border border-slate-800 rounded px-1.5 py-1">
+              <LayoutTemplate size={14} className="text-blue-400 shrink-0" />
+              <select
+                value={activeTemplateName}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === 'Hello World') loadTemplate('Hello World', defaultTemplate);
+                  else if (val === 'Animation') loadTemplate('Animation', animationTemplate);
+                  else if (val === 'TextField Example') loadTemplate('TextField Example', textFieldTemplate);
+                }}
+                className="bg-transparent text-slate-300 outline-none border-none cursor-pointer text-xs font-semibold"
+              >
+                <option value="Hello World" className="bg-[#0e1322]">Hello World</option>
+                <option value="Animation" className="bg-[#0e1322]">Animation</option>
+                <option value="TextField Example" className="bg-[#0e1322]">TextField Ex</option>
+              </select>
+            </div>
+          )}
+
+          {!isMobile && (
+            <>
+              <div className="h-6 w-px bg-slate-800"></div>
+              <button
+                onClick={() => setTheme(theme === 'vs-dark' ? 'light' : 'vs-dark')}
+                className="p-1.5 text-slate-400 hover:text-slate-200 rounded-md hover:bg-slate-800/80 transition-colors"
+                title="Toggle Theme"
+              >
+                <Settings size={18} />
+              </button>
+            </>
+          )}
 
           {isRunning ? (
             <button
@@ -340,7 +370,6 @@ function App() {
                       processInfo={processInfo}
                       exitCode={exitCode}
                       statusMessage={statusMessage}
-                      stopCode={stopCode}
                     />
                   </div>
                 </div>
@@ -433,7 +462,6 @@ function App() {
                         processInfo={processInfo}
                         exitCode={exitCode}
                         statusMessage={statusMessage}
-                        stopCode={stopCode}
                       />
                     </div>
                   </div>
