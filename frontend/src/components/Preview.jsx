@@ -90,6 +90,7 @@ const evalExpr = (expr, variables, inputs) => {
 };
 
 // Parser to extract components and drawings from Java Applet code
+// Parser to extract components and drawings from Java Applet/Frame code
 function parseJavaApplet(code) {
   const result = {
     title: 'Applet Viewer',
@@ -113,9 +114,17 @@ function parseJavaApplet(code) {
   if (titleMatch) {
     result.title = titleMatch[1].trim();
   } else {
-    const classMatch = code.match(/public\s+class\s+(\w+)/);
-    if (classMatch) {
-      result.title = `Applet Viewer: ${classMatch[1]}`;
+    // Parse title from Frame/JFrame constructor or setTitle
+    const frameTitleMatch = code.match(/new\s+(?:java\.awt\.)?Frame\(\s*"([^"]+)"\s*\)/) ||
+                            code.match(/new\s+(?:javax\.swing\.)?JFrame\(\s*"([^"]+)"\s*\)/) ||
+                            code.match(/(?:\w+\.)?setTitle\(\s*"([^"]+)"\s*\)/);
+    if (frameTitleMatch) {
+      result.title = frameTitleMatch[1];
+    } else {
+      const classMatch = code.match(/public\s+class\s+(\w+)/);
+      if (classMatch) {
+        result.title = `Applet Viewer: ${classMatch[1]}`;
+      }
     }
   }
 
@@ -125,8 +134,15 @@ function parseJavaApplet(code) {
   if (widthMatch) result.width = parseInt(widthMatch[1], 10);
   if (heightMatch) result.height = parseInt(heightMatch[1], 10);
 
+  // Parse size from setSize(w, h) or frame.setSize(w, h)
+  const sizeMatch = code.match(/(?:\w+\.)?setSize\(\s*(\d+)\s*,\s*(\d+)\s*\)/);
+  if (sizeMatch) {
+    result.width = parseInt(sizeMatch[1], 10);
+    result.height = parseInt(sizeMatch[2], 10);
+  }
+
   // 2. Parse Background Color
-  const bgMatch = code.match(/setBackground\((Color\.\w+|new Color\([\d\s,]+\)|[^)]+)\)/);
+  const bgMatch = code.match(/(?:\w+\.)?setBackground\((Color\.\w+|new Color\([\d\s,]+\)|[^)]+)\)/);
   if (bgMatch) {
     const bgVal = bgMatch[1].trim();
     if (bgVal.startsWith('Color.')) {
@@ -140,7 +156,7 @@ function parseJavaApplet(code) {
   }
 
   // Parse Foreground Color
-  const fgMatch = code.match(/setForeground\((Color\.\w+|new Color\([\d\s,]+\)|[^)]+)\)/);
+  const fgMatch = code.match(/(?:\w+\.)?setForeground\((Color\.\w+|new Color\([\d\s,]+\)|[^)]+)\)/);
   if (fgMatch) {
     const fgVal = fgMatch[1].trim();
     if (fgVal.startsWith('Color.')) {
@@ -155,10 +171,13 @@ function parseJavaApplet(code) {
 
   // 3. Parse Component declarations and instantiations
   const declarations = [];
-  const declRegex = /(Label|TextField|Button)\s+([\w\s,]+);/g;
+  const declRegex = /(?:java\.awt\.|javax\.swing\.)?(Label|TextField|Button|JLabel|JTextField|JButton)\s+([\w\s,]+);/g;
   let match;
   while ((match = declRegex.exec(code)) !== null) {
-    const type = match[1];
+    let type = match[1];
+    if (type === 'JLabel') type = 'Label';
+    if (type === 'JTextField') type = 'TextField';
+    if (type === 'JButton') type = 'Button';
     const vars = match[2].split(',').map(v => v.trim());
     vars.forEach(v => {
       declarations.push({ type, name: v });
@@ -168,20 +187,27 @@ function parseJavaApplet(code) {
   const componentsMap = {};
 
   // Find components instantiated with new
-  const instRegex = /(\w+)\s*=\s*new\s+(Label|TextField|Button)\((.*?)\)/g;
+  const instRegex = /(\w+)\s*=\s*new\s+(?:java\.awt\.|javax\.swing\.)?(Label|TextField|Button|JLabel|JTextField|JButton)\((.*?)\)/g;
   while ((match = instRegex.exec(code)) !== null) {
     const name = match[1];
-    const type = match[2];
+    let type = match[2];
     const args = match[3].split(',').map(a => a.trim().replace(/^"|"$/g, ''));
+
+    if (type === 'JLabel') type = 'Label';
+    if (type === 'JTextField') type = 'TextField';
+    if (type === 'JButton') type = 'Button';
 
     componentsMap[name] = { name, type, args };
   }
 
-  // Find direct anonymous additions: add(new Label("..."))
-  const anonRegex = /add\(\s*new\s+(Label|TextField|Button)\((.*?)\)\s*\)/g;
+  // Find direct anonymous additions: add(new Label("...")) or jf.add(new Label("..."))
+  const anonRegex = /(?:\w+\.)?add\(\s*new\s+(?:java\.awt\.|javax\.swing\.)?(Label|TextField|Button|JLabel|JTextField|JButton)\((.*?)\)\s*\)/g;
   let anonCounter = 0;
   while ((match = anonRegex.exec(code)) !== null) {
-    const type = match[1];
+    let type = match[1];
+    if (type === 'JLabel') type = 'Label';
+    if (type === 'JTextField') type = 'TextField';
+    if (type === 'JButton') type = 'Button';
     const args = match[2].split(',').map(a => a.trim().replace(/^"|"$/g, ''));
     const name = `anon_${type.toLowerCase()}_${anonCounter++}`;
     componentsMap[name] = {
@@ -194,7 +220,7 @@ function parseJavaApplet(code) {
   }
 
   // Parse add(varName) statements to order components in the container
-  const addRegex = /add\(\s*(\w+)\s*\)/g;
+  const addRegex = /(?:\w+\.)?add\(\s*(\w+)\s*\)/g;
   while ((match = addRegex.exec(code)) !== null) {
     const name = match[1];
     if (componentsMap[name]) {
@@ -206,7 +232,8 @@ function parseJavaApplet(code) {
   // explicitly because of code formatting variations, add them
   Object.keys(componentsMap).forEach(name => {
     if (!componentsMap[name].isAnonymous && !result.components.some(c => c.name === name)) {
-      if (code.includes(`add(${name})`)) {
+      const pattern = new RegExp(`(?:\\w+\\.)?add\\(\\s*${name}\\s*\\)`);
+      if (pattern.test(code)) {
         result.components.push(componentsMap[name]);
       }
     }
@@ -267,7 +294,7 @@ function parseJavaApplet(code) {
         });
       }
 
-      const bgMatch = trimmed.match(/setBackground\((Color\.\w+|new Color\([\d\s,]+\)|[^)]+)\)/);
+      const bgMatch = trimmed.match(/(?:\w+\.)?setBackground\((Color\.\w+|new Color\([\d\s,]+\)|[^)]+)\)/);
       if (bgMatch) {
         bgChange = bgMatch[1].trim();
       }
@@ -456,7 +483,25 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
   const [variables, setVariables] = useState({});
   const [inputs, setInputs] = useState({});
 
-  const codeIsApplet = code && (code.includes('extends Applet') || code.includes('extends java.applet.Applet'));
+  const isGuiApp = useMemo(() => {
+    if (!code) return false;
+    return code.includes('extends Applet') || 
+           code.includes('extends java.applet.Applet') ||
+           code.includes('extends JApplet') || 
+           code.includes('extends javax.swing.JApplet') ||
+           code.includes('extends Frame') || 
+           code.includes('extends java.awt.Frame') ||
+           code.includes('extends JFrame') || 
+           code.includes('extends javax.swing.JFrame') ||
+           code.includes('new Frame') || 
+           code.includes('new java.awt.Frame') ||
+           code.includes('new JFrame') || 
+           code.includes('new javax.swing.JFrame') ||
+           code.includes('new Window') ||
+           code.includes('new Dialog') ||
+           code.includes('new Panel') ||
+           code.includes('new JPanel');
+  }, [code]);
 
   const updateScale = () => {
     if (containerRef.current) {
@@ -485,7 +530,7 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
     updateScale();
 
     return () => observer.disconnect();
-  }, [codeIsApplet, isRunning]);
+  }, [isGuiApp, isRunning]);
 
   // Sync state on template load or code modifications
   useEffect(() => {
@@ -697,7 +742,7 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
   }
 
   // 1. RENDER NATIVE JAVA APPLET SIMULATOR
-  if (codeIsApplet) {
+  if (isGuiApp) {
     return (
       <div ref={containerRef} className="w-full h-full bg-gradient-to-br from-slate-900 to-indigo-950 p-6 flex flex-col justify-between text-white overflow-auto">
 

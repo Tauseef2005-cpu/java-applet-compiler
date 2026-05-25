@@ -108,6 +108,27 @@ function injectMainMethod(code, className) {
     return code;
 }
 
+function isGuiCode(code) {
+    if (!code) return false;
+    return code.includes('extends Applet') || 
+           code.includes('extends java.applet.Applet') ||
+           code.includes('extends JApplet') || 
+           code.includes('extends javax.swing.JApplet') ||
+           code.includes('extends Frame') || 
+           code.includes('extends java.awt.Frame') ||
+           code.includes('extends JFrame') || 
+           code.includes('extends javax.swing.JFrame') ||
+           code.includes('new Frame') || 
+           code.includes('new java.awt.Frame') ||
+           code.includes('new JFrame') || 
+           code.includes('new javax.swing.JFrame') ||
+           code.includes('new Window') ||
+           code.includes('new Dialog') ||
+           code.includes('new Panel') ||
+           code.includes('new JPanel');
+}
+
+
 app.post('/compile', (req, res) => {
     let { code } = req.body;
 
@@ -218,7 +239,8 @@ app.post('/run', (req, res) => {
     let child = null;
     let isRequestClosed = false;
     const isApplet = code.includes('extends Applet') || code.includes('extends JApplet');
-    console.log(`Is Applet: ${isApplet}, isHeadless: ${isHeadless}`);
+    const isGui = isGuiCode(code);
+    console.log(`Is Applet: ${isApplet}, Is GUI: ${isGui}, isHeadless: ${isHeadless}`);
 
     // Run javac
     console.log(`Running javac on: ${javaFilePath}`);
@@ -241,10 +263,10 @@ app.post('/run', (req, res) => {
         console.log("Compilation successful!");
         sendSSE({ type: 'status', text: 'Compilation successful.' });
 
-        if (isApplet) {
+        if (isGui) {
             if (isHeadless) {
                 console.log("Running in headless simulation mode...");
-                sendSSE({ type: 'status', text: 'Applet compiled successfully (Headless Simulation Mode).' });
+                sendSSE({ type: 'status', text: 'GUI App compiled successfully (Headless Simulation Mode).' });
                 const mockPid = 99999;
                 sendSSE({ type: 'start', pid: mockPid, isApplet: true });
 
@@ -269,20 +291,26 @@ app.post('/run', (req, res) => {
                 return;
             }
 
-            // Write applet HTML container file
-            const htmlContent = `<!DOCTYPE html>
+            if (isApplet) {
+                // Write applet HTML container file
+                const htmlContent = `<!DOCTYPE html>
 <html>
 <head><title>Applet Viewer: ${className}</title></head>
 <body>
   <applet code="${className}.class" width="800" height="600"></applet>
 </body>
 </html>`;
-            fs.writeFileSync(path.join(tempDir, 'index.html'), htmlContent);
-            console.log("Wrote index.html for appletviewer");
+                fs.writeFileSync(path.join(tempDir, 'index.html'), htmlContent);
+                console.log("Wrote index.html for appletviewer");
 
-            sendSSE({ type: 'status', text: `Launching Applet Viewer on desktop...` });
-            console.log("Spawning appletviewer index.html...");
-            child = spawn('appletviewer', ['index.html'], { cwd: tempDir });
+                sendSSE({ type: 'status', text: `Launching Applet Viewer on desktop...` });
+                console.log("Spawning appletviewer index.html...");
+                child = spawn('appletviewer', ['index.html'], { cwd: tempDir });
+            } else {
+                sendSSE({ type: 'status', text: `Starting Java GUI application...` });
+                console.log(`Spawning java ${className} for GUI...`);
+                child = spawn('java', [className], { cwd: tempDir });
+            }
         } else {
             sendSSE({ type: 'status', text: `Starting Java application...` });
             console.log(`Spawning java ${className}...`);
@@ -327,7 +355,7 @@ app.post('/run', (req, res) => {
     res.on('close', () => {
         console.log("Client response connection closed.");
         isRequestClosed = true;
-        if (activeProcess && (activeProcess === child || (isHeadless && isApplet && activeProcess.kill))) {
+        if (activeProcess && (activeProcess === child || (isHeadless && isGui && activeProcess.kill))) {
             stopActiveProcess();
         }
     });
