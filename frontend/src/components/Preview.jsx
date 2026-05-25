@@ -116,7 +116,7 @@ function parseJavaApplet(code) {
   }
 
   // 2. Parse Background Color
-  const bgMatch = code.match(/setBackground\(([^)]+)\)/);
+  const bgMatch = code.match(/setBackground\((Color\.\w+|new Color\([\d\s,]+\)|[^)]+)\)/);
   if (bgMatch) {
     const bgVal = bgMatch[1].trim();
     if (bgVal.startsWith('Color.')) {
@@ -234,7 +234,7 @@ function parseJavaApplet(code) {
       if (!trimmed) return;
 
       // Color check
-      const colorMatch = trimmed.match(new RegExp(`${gName}\\.setColor\\(([^)]+)\\)`));
+      const colorMatch = trimmed.match(new RegExp(`${gName}\\.setColor\\((Color\\\\.\\\\w+|new Color\\\\([\\\\d\\\\s,]+\\\\)|[^)]+)\\)`));
       if (colorMatch) {
         const colVal = colorMatch[1].trim();
         if (colVal.startsWith('Color.')) {
@@ -529,7 +529,7 @@ export default function Preview({ code, isRunning, isCompiling, processInfo, exi
         console.warn('Canvas draw statement error:', err);
       }
     });
-  }, [appletData, variables, inputs]);
+  }, [appletData, variables, inputs, isCompiling, isRunning]);
 
   // Handle simulated button click
   const handleButtonClick = (buttonName) => {
