@@ -2,7 +2,7 @@
 FROM eclipse-temurin:8-jdk
 
 # Copy Node.js from official Node image (more robust than deprecated nodesource scripts)
-COPY --from=node:18 /usr/local /usr/local
+COPY --from=node:20 /usr/local /usr/local
 
 # Create application directory
 WORKDIR /app
